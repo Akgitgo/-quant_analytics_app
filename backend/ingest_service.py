@@ -28,7 +28,7 @@ def start_ingestion_service():
     last_trade_ids = {s: 0 for s in symbols}
     
     logging.info(f"🚀 Ingestion Service Started (Polling Mode) for: {symbols}")
-    logging.info("ℹ Polling interval: 2.0s to respect Rate Limits.")
+    logging.info("i Polling interval: 2.0s to respect Rate Limits.")
 
     try:
         while True:

@@ -26,9 +26,9 @@ def resample_ohlcv(df, rule):
 
 def compute_pair_analytics(px, py, window):
     """
-    Computes Beta, Spread, Z-Score, and Rolling Correlation.
-    Returns (beta, spread, zscore, corr).
-    Returns (None, None, None, None) if insufficient data.
+    Computes Beta, Spread, Z-Score, Rolling Correlation, Rolling Volatility, and R-Squared.
+    Returns (beta, spread, zscore, corr, rolling_std, r_squared).
+    Returns (None, None, None, None, None, None) if insufficient data.
     """
     logger.info(f"Computing analytics for window={window}")
 
@@ -39,7 +39,7 @@ def compute_pair_analytics(px, py, window):
 
     if len(merged) < window:
         logger.warning(f"Insufficient data for analytics: {len(merged)} < {window}")
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     try:
         # I initially tried using .apply() here but it was way too slow
@@ -61,11 +61,33 @@ def compute_pair_analytics(px, py, window):
 
         corr = merged["x"].rolling(window=window, min_periods=window).corr(merged["y"])
         
-        return beta, spread, zscore, corr
+        r_squared = model.rsquared
+        
+        return beta, spread, zscore, corr, rolling_std, r_squared
 
     except Exception as e:
         logger.error(f"Error in analytics computation: {str(e)}", exc_info=True)
-        return None, None, None, None
+        return None, None, None, None, None, None
+
+def calculate_signal_efficacy(spread, zscore, lookahead=5):
+    """
+    Computes the relationship between current Z-Score and future spread change (t + lookahead).
+    Returns a DataFrame with columns: ['zscore', 'spread_change']
+    """
+    if spread is None or zscore is None or len(spread) < lookahead:
+        return None
+        
+    # Future spread change: Spread(t + k) - Spread(t)
+    # We use shift(-lookahead) to bring future value to current row
+    future_spread = spread.shift(-lookahead)
+    spread_change = future_spread - spread
+    
+    data = pd.DataFrame({
+        "zscore": zscore,
+        "spread_change": spread_change
+    }).dropna()
+    
+    return data
 
 def adf_pvalue(series):
     if series is None or len(series.dropna()) < 20:

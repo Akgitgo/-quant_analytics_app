@@ -22,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from storage import init_db, load_ticks
-from analytics import resample_ohlcv, compute_pair_analytics, adf_pvalue
+from analytics import resample_ohlcv, compute_pair_analytics, adf_pvalue, calculate_signal_efficacy
 
 # ----------------------------------------------------
 # PAGE CONFIG
@@ -60,7 +60,9 @@ st.title("📊 Quant Analytics Dashboard")
 # ----------------------------------------------------
 # We use a primitive marker file to track if the ingestion process is running
 # because Streamlit session state is per-browser-tab, but the backend process is global.
-PID_FILE = "ingest.pid"
+# because Streamlit session state is per-browser-tab, but the backend process is global.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PID_FILE = os.path.join(BASE_DIR, "ingest.pid")
 
 def is_process_running():
     if os.path.exists(PID_FILE):
@@ -74,17 +76,23 @@ def start_process():
     # Start the ingestion script as a separate process
     # We use sys.executable to ensure we use the same python interpreter (venv)
     kwargs = {}
+    # Windows-specific flags removed to ensure compatibility with cloud/headless environments
+    # and to prevent new window popups that block mobile/web usage.
     if sys.platform == "win32":
-        # Windows: Opens separate window for logs
-        kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+        # We purposely do NOT use CREATE_NEW_CONSOLE to keep it hidden/embedded
+        pass
     
-    proc = subprocess.Popen(
-        [sys.executable, "ingest_service.py"],
-        **kwargs
-    )
-    
-    with open(PID_FILE, "w") as f:
-        f.write(str(proc.pid))
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(BASE_DIR, "ingest_service.py")],
+            cwd=BASE_DIR,
+            **kwargs
+        )
+        
+        with open(PID_FILE, "w") as f:
+            f.write(str(proc.pid))
+    except Exception as e:
+        st.error(f"Failed to start background process: {e}")
 
 def stop_process():
     if os.path.exists(PID_FILE):
@@ -158,8 +166,13 @@ if st.sidebar.button("▶ Start Live Feed"):
 if st.sidebar.button("⏹ Stop Live Feed"):
     stop_process()
     st.sidebar.warning("Backend Ingestion Service Stopped")
-    time.sleep(1)
     st.rerun()
+
+# Auto-Refresh Control
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔄 Refresh Settings")
+enable_refresh = st.sidebar.toggle("Auto-Refresh Data", value=False)
+refresh_rate = st.sidebar.slider("Interval (seconds)", 1, 30, 3, disabled=not enable_refresh)
 
 # Sidebar - Connection Status
 st.sidebar.markdown("### 📡 Connection Status")
@@ -270,43 +283,110 @@ if min_len < window:
     time.sleep(2)
     st.rerun()
 
-beta, spread, zscore, corr = compute_pair_analytics(px, py, window)
+# Unpack all 6 return values
+beta, spread, zscore, corr, rolling_std, r_squared = compute_pair_analytics(px, py, window)
 
-# Extract scalars for display
-hedge_ratio = beta
-latest_z_score = zscore.iloc[-1] if zscore is not None and not zscore.empty else None
-correlation_value = corr.iloc[-1] if corr is not None and not corr.empty else None
-adf_pval_value = adf_pvalue(spread) if spread is not None else None
+# ----------------------------------------------------
+# LIVE STATISTICS PANEL (SIDEBAR)
+# ----------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("Live Statistics")
+
+def format_currency(val):
+    return f"${val:,.2f}"
+
+def calculate_std(series):
+    if len(series) < 2: return 0.0
+    return series.std()
+
+# Helper to get latest scalar
+px_last = px.iloc[-1]["close"] if not px.empty else 0
+py_last = py.iloc[-1]["close"] if not py.empty else 0
+px_std = calculate_std(px["close"].tail(window))
+py_std = calculate_std(py["close"].tail(window))
+
+# Custom CSS for the stats cards
+st.markdown("""
+<style>
+    div[data-testid="stMetricValue"] {
+        font-size: 1.2rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Container for statistics
+with st.sidebar.container():
+    # SYMBOL X Stats
+    st.markdown(f"**{sym_x.upper()}**")
+    c1, c2 = st.columns(2)
+    c1.metric("Price", format_currency(px_last))
+    c2.metric("STD", f"${px_std:.2f}")
+    
+    # SYMBOL Y Stats
+    st.markdown(f"**{sym_y.upper()}**")
+    c3, c4 = st.columns(2)
+    c3.metric("Price", format_currency(py_last))
+    c4.metric("STD", f"${py_std:.2f}")
+    
+    st.markdown("---")
+    
+    # PAIR Stats
+    st.markdown("**PAIR METRICS**")
+    
+    # Row 1
+    c5, c6 = st.columns(2)
+    beta_val = f"{beta:.4f}" if beta is not None else "---"
+    r2_val = f"{r_squared:.3f}" if r_squared is not None else "---"
+    
+    c5.metric("Hedge Ratio (β)", beta_val)
+    c6.metric("R²", r2_val)
+    
+    # Row 2
+    c7, c8 = st.columns(2)
+    adf_val = f"{adf_pvalue(spread):.4f}" if spread is not None else "---"
+    corr_val = f"{corr.iloc[-1]:.3f}" if corr is not None and not corr.empty else "---"
+    
+    c7.metric("ADF p-value", adf_val)
+    c8.metric("Correlation", corr_val)
+
+
 
 # ----------------------------------------------------
 # KPI CARDS (FIXED NaN DISPLAY)
 # ----------------------------------------------------
-# Summary Metrics Section
-col1, col2, col3, col4 = st.columns(4)
+# ----------------------------------------------------
+# SYSTEM KPIs (Top Bar)
+# ----------------------------------------------------
+# Matches requested "Dark Card" stats style
+st.markdown("### 📊 Live System Status")
+k1, k2, k3 = st.columns(3)
 
-with col1:
-    if hedge_ratio is not None:
-        st.metric("Hedge Ratio (β)", f"{hedge_ratio:.4f}")
-    else:
-        st.metric("Hedge Ratio (β)", "Calculating...")
+with k1:
+    st.metric(
+        label="Ticks Received",
+        value=f"{len(df):,}",
+        delta="Active Feed" if is_process_running() else "Disconnected"
+    )
 
-with col2:
-    if latest_z_score is not None and not np.isnan(latest_z_score):
-        st.metric("Latest Z-Score", f"{latest_z_score:.2f}")
-    else:
-        st.metric("Latest Z-Score", "Calculating...")
+with k2:
+    st.metric(
+        label="Bars Processed",
+        value=f"{len(ohlcv):,}",
+        delta=f"{timeframe} Interval"
+    )
 
-with col3:
-    if correlation_value is not None and not np.isnan(correlation_value):
-        st.metric("Correlation", f"{correlation_value:.2f}")
+with k3:
+    if zscore is not None:
+        # Count all historical alerts in the current window
+        alert_count = (zscore.abs() > z_alert).sum()
+        st.metric(
+            label="Alerts Triggered",
+            value=f"{alert_count}",
+            delta="In Window",
+            delta_color="off" if alert_count == 0 else "inverse"
+        )
     else:
-        st.metric("Correlation", "Calculating...")
-
-with col4:
-    if adf_pval_value is not None and not np.isnan(adf_pval_value):
-        st.metric("ADF p-value", f"{adf_pval_value:.4f}")
-    else:
-        st.metric("ADF p-value", "Not Computed")
+        st.metric("Alerts Triggered", "0", delta="Waiting for Data")
 
 # ----------------------------------------------------
 # VISUAL ALERT SYSTEM
@@ -314,6 +394,8 @@ with col4:
 # Alert Section
 st.markdown("---")
 st.subheader("🚨 Alert Status")
+
+latest_z_score = zscore.iloc[-1] if zscore is not None and not zscore.empty else None
 
 if latest_z_score is not None and not np.isnan(latest_z_score):
     if abs(latest_z_score) > z_alert:
@@ -346,19 +428,149 @@ st.plotly_chart(fig_price)
 
 st.subheader("📉 Spread & Z-Score")
 
-fig_spread = go.Figure()
-fig_spread.add_trace(go.Scatter(x=spread.index, y=spread, name="Spread"))
-fig_spread.add_trace(go.Scatter(x=zscore.index, y=zscore, name="Z-Score", yaxis="y2"))
+if spread is not None and zscore is not None:
+    fig_spread = go.Figure()
+    fig_spread.add_trace(go.Scatter(x=spread.index, y=spread, name="Spread"))
+    fig_spread.add_trace(go.Scatter(x=zscore.index, y=zscore, name="Z-Score", yaxis="y2"))
 
-fig_spread.update_layout(
-    yaxis2=dict(overlaying="y", side="right")
-)
-st.plotly_chart(fig_spread)
+    fig_spread.update_layout(
+        yaxis2=dict(overlaying="y", side="right")
+    )
+    st.plotly_chart(fig_spread)
+else:
+    st.info("Insufficient data to calculate Spread and Z-Score.")
 
+# ----------------------------------------------------
+# ADVANCED ANALYTICS (Requested UI Updates)
+# ----------------------------------------------------
+st.markdown("---")
+st.subheader("🧪 Advanced Quantitative Diagnostics")
+
+# Layout: 2 Columns for Signal Efficacy and Distribution
+ac1, ac2 = st.columns(2)
+
+# 1. Signal Efficacy (Z vs Future Delta)
+with ac1:
+    st.markdown("##### Signal Efficacy (Z vs Future Δ)")
+    st.caption("Negative slope = strong mean reversion = good signal")
+    
+    if spread is not None and zscore is not None:
+        eff_df = calculate_signal_efficacy(spread, zscore, lookahead=5)
+        
+        if eff_df is not None and not eff_df.empty:
+            # Fit trendline
+            z = eff_df["zscore"]
+            y = eff_df["spread_change"]
+            
+            # Simple linear regression for slope
+            slope, intercept = np.polyfit(z, y, 1)
+            trend_line = slope * z + intercept
+            
+            fig_eff = go.Figure()
+            
+            # Scatter points
+            fig_eff.add_trace(go.Scatter(
+                x=z, y=y,
+                mode='markers',
+                name='Signal Efficacy',
+                marker=dict(
+                    color=z, # Color by z-score
+                    colorscale='RdBu', # Red (pos) to Blue (neg)
+                    showscale=False,
+                    opacity=0.6
+                )
+            ))
+            
+            # Trend line
+            fig_eff.add_trace(go.Scatter(
+                x=z, y=trend_line,
+                mode='lines',
+                name=f'Trend (slope={slope:.4f})',
+                line=dict(color='orange', width=2, dash='dash')
+            ))
+            
+            fig_eff.add_vline(x=0, line_width=1, line_dash="dot", line_color="gray")
+            fig_eff.add_hline(y=0, line_width=1, line_dash="dot", line_color="gray")
+            
+            fig_eff.update_layout(
+                xaxis_title="Z-Score at t",
+                yaxis_title="Spread Change (t+5)",
+                legend=dict(x=0.6, y=1.0),
+                margin=dict(l=20, r=20, t=30, b=20),
+                height=400
+            )
+            st.plotly_chart(fig_eff, use_container_width=True)
+        else:
+            st.info("Insufficient data for signal efficacy analysis")
+
+# 2. Z-Score Distribution
+with ac2:
+    st.markdown("##### Z-Score Distribution")
+    st.caption("Validates threshold selection • Shows tail behavior")
+    
+    if zscore is not None:
+        fig_dist = go.Figure()
+        fig_dist.add_trace(go.Histogram(
+            x=zscore,
+            nbinsx=30,
+            marker_color='#2E86C1', # Nice blue
+            opacity=0.85,
+            name='Frequency'
+        ))
+        
+        # Threshold lines (Red/Green dashed)
+        fig_dist.add_vline(x=z_alert, line_width=2, line_dash="dash", line_color="#E74C3C")
+        fig_dist.add_vline(x=-z_alert, line_width=2, line_dash="dash", line_color="#2ECC71")
+        fig_dist.add_vline(x=0, line_width=1, line_dash="dot", line_color="gray")
+        
+        fig_dist.update_layout(
+            xaxis_title="Z-Score",
+            yaxis_title="Frequency",
+            showlegend=False,
+            margin=dict(l=20, r=20, t=30, b=20),
+            height=400
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
+
+# 3. Rolling Volatility
+st.markdown("##### Rolling Volatility of Spread")
+st.caption("Regime detection • Low vol + high |Z| = ideal")
+
+if rolling_std is not None:
+    vol_mean = rolling_std.mean()
+    vol_high = rolling_std.quantile(0.90) # 90th percentile as "High Vol"
+    
+    fig_vol = go.Figure()
+    
+    # Fill area
+    fig_vol.add_trace(go.Scatter(
+        x=rolling_std.index, y=rolling_std,
+        fill='tozeroy',
+        mode='lines',
+        name='Volatility (σ)',
+        line=dict(color='#8E44AD', width=2) # Purple
+    ))
+    
+    # Thresholds
+    fig_vol.add_hline(y=vol_high, line_dash="dash", line_color="#E74C3C", annotation_text="High Vol Zone", annotation_position="top right")
+    fig_vol.add_hline(y=vol_mean, line_dash="dash", line_color="gray", annotation_text=f"Mean: {vol_mean:.4f}", annotation_position="top right")
+    
+    fig_vol.update_layout(
+        xaxis_title="Time",
+        yaxis_title="Volatility (σ)",
+        margin=dict(l=20, r=20, t=30, b=20),
+        height=350,
+        showlegend=False
+    )
+    st.plotly_chart(fig_vol, use_container_width=True)
+    
 st.subheader("🔗 Rolling Correlation")
-fig_corr = go.Figure()
-fig_corr.add_trace(go.Scatter(x=corr.index, y=corr, name="Correlation"))
-st.plotly_chart(fig_corr)
+if corr is not None:
+    fig_corr = go.Figure()
+    fig_corr.add_trace(go.Scatter(x=corr.index, y=corr, name="Correlation"))
+    st.plotly_chart(fig_corr)
+else:
+    st.info("Insufficient data to calculate Correlation.")
 
 # ----------------------------------------------------
 # EXPORT
@@ -370,3 +582,11 @@ st.download_button(
     ohlcv.to_csv(index=False),
     "ohlcv_data.csv"
 )
+
+# ----------------------------------------------------
+# AUTO-REFRESH LOGIC (USER CONTROLLED)
+# ----------------------------------------------------
+# Only refresh if the user explicitly enables it to assume control over "flickering"
+if enable_refresh and is_process_running():
+    time.sleep(refresh_rate)
+    st.rerun()
