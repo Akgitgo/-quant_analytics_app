@@ -397,7 +397,7 @@ with k1:
     st.metric(
         label="Ticks Received",
         value=f"{len(df):,}",
-        delta="Active Feed" if is_process_running() else "Disconnected"
+        delta="Active Feed" if is_ingestion_running() else "Disconnected"
     )
 
 with k2:
