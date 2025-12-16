@@ -39,7 +39,7 @@ Data export for raw ticks and processed analytics
 
 The following diagram illustrates the complete system architecture from data ingestion to user interface:
 
-![System Architecture](architecture_diagram.png)
+![System Architecture](architecture_drawio.png)
 
 *Figure: End-to-end data flow from Binance WebSocket through processing layers to the Streamlit frontend*
 
