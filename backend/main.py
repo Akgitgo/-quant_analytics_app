@@ -21,6 +21,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Hack to allow imports when running from different CWD
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
 from storage import init_db, load_ticks
 from analytics import resample_ohlcv, compute_pair_analytics, adf_pvalue, calculate_signal_efficacy
 
