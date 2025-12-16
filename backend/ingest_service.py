@@ -4,8 +4,17 @@ import logging
 import time
 import pandas as pd
 
-# Configure logging to show up in the console
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+from datetime import datetime
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
+    handlers=[
+        logging.FileHandler(f'analytics_ingest_{datetime.now().strftime("%Y%m%d")}.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def start_ingestion_service():
     """

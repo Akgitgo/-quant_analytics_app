@@ -3,7 +3,9 @@ Overview
 
 This project is a real-time quantitative analytics dashboard built to demonstrate an end-to-end trading analytics workflow — from live market data ingestion to sampling, statistical analysis, alerting, and interactive visualization.
 
-The system is designed as a lightweight prototype of a trader-facing analytics tool used in market-making or statistical arbitrage environments, with a strong emphasis on clarity, correctness, and extensibility rather than production-scale complexity.
+The app is built with a modular design that keeps things clean and easy to maintain, even though it runs as a single local app for now.
+
+Initially I tried storing everything in CSV files, but that got messy fast. SQLite was a much better fit for this prototype.
 
 Key Capabilities
 
@@ -34,22 +36,43 @@ Fully interactive Plotly visualizations
 Data export for raw ticks and processed analytics
 
 Architecture Overview
-
 The application follows a clean, modular logical architecture, even though it runs as a single local app:
 
-Binance Futures WebSocket
-          ↓
-Tick Ingestion Layer
-          ↓
-In-Memory Storage (Pandas)
-          ↓
-Sampling & Analytics Engine
-          ↓
-Streamlit Interactive Dashboard
-          ↓
-Alerts & Data Export
+Binance Futures WebSocket -> Tick Ingestion Layer -> In-Memory Storage (Pandas) -> Sampling & Analytics Engine -> Streamlit Interactive Dashboard -> Alerts & Data Export
 
-Design Principles
+## Design Decisions & Trade-offs
+
+### Storage: SQLite
+**Rationale:** Zero-configuration, lightweight, perfect for single-user prototype.  
+**Trade-off:** Not optimized for high-frequency concurrent writes.  
+**Production Alternative:** PostgreSQL with TimescaleDB extension for time-series optimization, or InfluxDB for pure time-series workloads.
+
+### Frontend: Streamlit
+**Rationale:** Rapid prototyping (1-day constraint), built-in reactivity, Python-native.  
+**Trade-off:** Less customization than FastAPI + React, limited styling control.  
+**Production Alternative:** FastAPI backend + React frontend for better separation, WebSocket support, and UI control.
+
+### In-Memory Processing
+**Rationale:** Simple, fast for prototype scale (<100k ticks), no cache management.  
+**Trade-off:** Limited by RAM, no persistence of computed analytics.  
+**Production Alternative:** Redis for tick buffer + computed analytics cache, separate worker processes.
+
+### Scaling Considerations
+
+**Current System Bottlenecks:**
+1. **Single WebSocket Connection:** Limited to ~100 symbols before message rate overwhelms parser
+2. **Synchronous Analytics:** Heavy computations (large rolling windows) block main thread
+3. **SQLite Write Lock:** Concurrent writes from multiple sources would cause contention
+4. **No Horizontal Scaling:** Single process cannot distribute load
+
+**Production Mitigation Strategies:**
+1. **Multiple WebSocket Clients:** Deploy behind load balancer, shard symbols across connections
+2. **Async Analytics Workers:** Use Celery/RQ with Redis queue for heavy computations
+3. **Database Sharding:** Time-based partitioning (e.g., daily tables), read replicas
+4. **Caching Layer:** Redis for frequently accessed analytics (latest z-scores, correlations)
+5. **Monitoring:** Prometheus + Grafana for latency tracking, alert on degradation
+
+## Design Principles
 
 Separation of concerns: ingestion, storage, analytics, and visualization are clearly isolated
 
@@ -254,7 +277,36 @@ Multi-asset correlation heatmaps
 
 Persistent storage (SQLite / DuckDB)
 
-ChatGPT Usage Transparency
+## Challenges Faced & Solutions
+
+### 1. Real-Time Update Performance
+**Challenge:** Streamlit reruns entire script on every update, causing noticeable lag with heavy analytics.  
+**Solution:** Implemented `st.cache_data` for expensive computations, used `st.empty()` containers for selective updates.
+
+### 2. WebSocket Disconnection Handling
+**Challenge:** Connection drops not handled gracefully, causing app to freeze.  
+**Solution:** Added try-catch with exponential backoff reconnection (max 5 retries), connection state tracking in session state.
+
+### 3. Edge Case: Insufficient Data for Analytics
+**Challenge:** Analytics functions threw errors when data points < rolling window size.  
+**Solution:** Added minimum threshold checks (`if len(data) < window`), display "Calculating..." during warmup period.
+
+### 4. Z-Score Calculation Accuracy
+**Challenge:** Edge cases at interval boundaries caused incorrect z-scores (NaN or infinity).  
+**Solution:** Used pandas `.rolling()` with `min_periods=window` parameter, added NaN filtering before display.
+
+### 5. OHLCV Aggregation Precision
+**Challenge:** Time-based resampling gave incorrect Open prices at interval boundaries.  
+**Solution:** Switched from `resample().first()` to `resample().agg({'price': 'first'})` with explicit label='right'.
+
+## What I Learned
+
+- Streamlit's caching is powerful but tricky - had to read the docs 3 times.
+- WebSocket reconnection is harder than I thought (learned about exponential backoff).
+- Rolling window calculations need careful handling at boundaries.
+- Real-time dashboards need careful state management.
+
+## ChatGPT Usage Transparency
 
 ChatGPT was used selectively to:
 

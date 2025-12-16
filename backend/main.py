@@ -4,11 +4,25 @@ import time
 import pandas as pd
 import plotly.graph_objects as go
 import os
+import subprocess
+import sys
+import numpy as np
+import logging
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
+    handlers=[
+        logging.FileHandler(f'analytics_{datetime.now().strftime("%Y%m%d")}.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 from storage import init_db, load_ticks
 from analytics import resample_ohlcv, compute_pair_analytics, adf_pvalue
-import subprocess
-import sys
 
 # ----------------------------------------------------
 # PAGE CONFIG
@@ -142,11 +156,15 @@ if st.sidebar.button("⏹ Stop Live Feed"):
     time.sleep(1)
     st.rerun()
 
-# Status Indicator
+# Sidebar - Connection Status
+st.sidebar.markdown("### 📡 Connection Status")
+
 if is_process_running():
-    st.sidebar.markdown("✅ **Status**: `Running`")
+    st.sidebar.success("🟢 Connected to Binance")
 else:
-    st.sidebar.markdown("🔴 **Status**: `Stopped`")
+    st.sidebar.error("🔴 Disconnected")
+
+st.sidebar.markdown("---")
 
 # ----------------------------------------------------
 # LOAD DATA
@@ -249,22 +267,62 @@ if min_len < window:
 
 beta, spread, zscore, corr = compute_pair_analytics(px, py, window)
 
-# ----------------------------------------------------
-# KPI CARDS
-# ----------------------------------------------------
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Hedge Ratio (β)", f"{beta:.4f}")
-c2.metric("Latest Z-Score", f"{zscore.iloc[-1]:.2f}")
-c3.metric("Correlation", f"{corr.iloc[-1]:.2f}")
-
-pval = adf_pvalue(spread)
-c4.metric("ADF p-value", f"{pval:.4f}")
+# Extract scalars for display
+hedge_ratio = beta
+latest_z_score = zscore.iloc[-1] if zscore is not None and not zscore.empty else None
+correlation_value = corr.iloc[-1] if corr is not None and not corr.empty else None
+adf_pval_value = adf_pvalue(spread) if spread is not None else None
 
 # ----------------------------------------------------
-# ALERT
+# KPI CARDS (FIXED NaN DISPLAY)
 # ----------------------------------------------------
-if abs(zscore.iloc[-1]) > z_alert:
-    st.error(f"🚨 Z-Score Alert: {zscore.iloc[-1]:.2f}")
+# Summary Metrics Section
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    if hedge_ratio is not None:
+        st.metric("Hedge Ratio (β)", f"{hedge_ratio:.4f}")
+    else:
+        st.metric("Hedge Ratio (β)", "Calculating...")
+
+with col2:
+    if latest_z_score is not None and not np.isnan(latest_z_score):
+        st.metric("Latest Z-Score", f"{latest_z_score:.2f}")
+    else:
+        st.metric("Latest Z-Score", "Calculating...")
+
+with col3:
+    if correlation_value is not None and not np.isnan(correlation_value):
+        st.metric("Correlation", f"{correlation_value:.2f}")
+    else:
+        st.metric("Correlation", "Calculating...")
+
+with col4:
+    if adf_pval_value is not None and not np.isnan(adf_pval_value):
+        st.metric("ADF p-value", f"{adf_pval_value:.4f}")
+    else:
+        st.metric("ADF p-value", "Not Computed")
+
+# ----------------------------------------------------
+# VISUAL ALERT SYSTEM
+# ----------------------------------------------------
+# Alert Section
+st.markdown("---")
+st.subheader("🚨 Alert Status")
+
+if latest_z_score is not None and not np.isnan(latest_z_score):
+    if abs(latest_z_score) > z_alert:
+        logger.warning(f"ALERT: Z-score={latest_z_score:.3f} > threshold={z_alert}")
+        st.error(f"⚠️ **ALERT TRIGGERED!** Z-Score ({latest_z_score:.2f}) exceeded threshold ({z_alert})")
+        st.markdown(f"""
+        <div style='padding: 10px; background-color: #ffcccc; border-left: 5px solid #ff0000; border-radius: 5px; color: black;'>
+        <strong>Action Recommended:</strong> Z-score breach detected. Consider reviewing spread mean-reversion opportunity.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.success(f"✅ Z-Score ({latest_z_score:.2f}) within threshold (±{z_alert})")
+else:
+    st.info("⏳ Collecting data... Alerts will activate once sufficient data is available.")
 
 # ----------------------------------------------------
 # CHARTS
