@@ -50,6 +50,7 @@ except Exception as e:
 st.set_page_config(
     page_title="Quant Analytics Dashboard",
     layout="wide",
+    initial_sidebar_state="expanded",  # Optimize sidebar rendering
 )
 
 # ----------------------------------------------------
@@ -222,11 +223,8 @@ st.sidebar.markdown("---")
 df = load_ticks()
 
 if df.empty:
-    st.warning("Waiting for live data... (Start the feed from the sidebar)")
-    # Auto-refresh to check for new data if feed is running
-    if is_ingestion_running():
-        time.sleep(2)
-        st.rerun()
+    st.warning("⏳ Waiting for live data... (Start the feed from the sidebar)")
+    # Don't block - let page render and use auto-refresh if enabled
     st.stop()
 
 # ----------------------------------------------------
@@ -293,9 +291,8 @@ if min_len < window:
     progress = min_len / window
     st.progress(min(progress, 1.0))
     
-    # Auto-refresh content until we have enough data
-    time.sleep(2)
-    st.rerun()
+    # Don't block with sleep - use auto-refresh instead
+    st.stop()
 
 # Unpack all 6 return values
 beta, spread, zscore, corr, rolling_std, r_squared = compute_pair_analytics(px, py, window)
