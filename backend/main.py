@@ -224,7 +224,10 @@ df = load_ticks()
 
 if df.empty:
     st.warning("⏳ Waiting for live data... (Start the feed from the sidebar)")
-    # Don't block - let page render and use auto-refresh if enabled
+    # Auto-refresh if ingestion is running to check for new data
+    if is_ingestion_running():
+        time.sleep(1)  # Brief pause to allow data collection
+        st.rerun()
     st.stop()
 
 # ----------------------------------------------------
@@ -291,7 +294,10 @@ if min_len < window:
     progress = min_len / window
     st.progress(min(progress, 1.0))
     
-    # Don't block with sleep - use auto-refresh instead
+    # Auto-refresh to collect more data
+    if is_ingestion_running():
+        time.sleep(1)
+        st.rerun()
     st.stop()
 
 # Unpack all 6 return values
