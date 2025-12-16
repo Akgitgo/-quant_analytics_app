@@ -73,9 +73,14 @@ def start_process():
     
     # Start the ingestion script as a separate process
     # We use sys.executable to ensure we use the same python interpreter (venv)
+    kwargs = {}
+    if sys.platform == "win32":
+        # Windows: Opens separate window for logs
+        kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+    
     proc = subprocess.Popen(
         [sys.executable, "ingest_service.py"],
-        creationflags=subprocess.CREATE_NEW_CONSOLE # Windows: Opens separate window for logs
+        **kwargs
     )
     
     with open(PID_FILE, "w") as f:
