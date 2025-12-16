@@ -219,24 +219,6 @@ st.sidebar.markdown("---")
 # ----------------------------------------------------
 # LOAD DATA
 # ----------------------------------------------------
-if st.sidebar.button("🗑 Reset/Clear Data"):
-    from storage import init_db
-    import os
-    try:
-        # We are inside 'backend/', so the file is just 'market_data.db'
-        if os.path.exists("market_data.db"):
-            os.remove("market_data.db")
-            st.sidebar.success("Deleted market_data.db")
-        else:
-            st.sidebar.warning("No DB file found to delete")
-    except Exception as e:
-        st.sidebar.error(f"Error deleting DB: {e}")
-    
-    init_db()
-    st.sidebar.info("Database re-initialized")
-    time.sleep(1)
-    st.rerun()
-
 df = load_ticks()
 
 if df.empty:
