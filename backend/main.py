@@ -26,8 +26,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-from storage import init_db, load_ticks
-from analytics import resample_ohlcv, compute_pair_analytics, adf_pvalue, calculate_signal_efficacy
+try:
+    from storage import init_db, load_ticks
+    from analytics import resample_ohlcv, compute_pair_analytics, adf_pvalue, calculate_signal_efficacy
+except ImportError as e:
+    st.error(f"CRITICAL IMPORT ERROR: {e}")
+    # Fallback or stop
+    st.stop()
+except Exception as e:
+    st.error(f"UNKNOWN ERROR DURING IMPORT: {e}")
+    st.stop()
 
 # ----------------------------------------------------
 # PAGE CONFIG
