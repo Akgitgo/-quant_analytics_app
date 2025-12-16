@@ -1,14 +1,24 @@
-import streamlit as st
+# CRITICAL: Fix import paths FIRST before any other imports
+import os
+import sys
+
+# Add backend directory to Python path for module resolution
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)  # Use insert(0) to prioritize this path
+
+# Standard library imports
 import threading
 import time
-import pandas as pd
-import plotly.graph_objects as go
-import os
 import subprocess
-import sys
-import numpy as np
 import logging
 from datetime import datetime
+
+# Third-party imports
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import numpy as np
 
 # Configure logging
 logging.basicConfig(
@@ -21,17 +31,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Hack to allow imports when running from different CWD
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.append(BASE_DIR)
-
+# Custom module imports with error handling
 try:
     from storage import init_db, load_ticks
     from analytics import resample_ohlcv, compute_pair_analytics, adf_pvalue, calculate_signal_efficacy
 except ImportError as e:
     st.error(f"CRITICAL IMPORT ERROR: {e}")
-    # Fallback or stop
+    st.error(f"Python path: {sys.path}")
+    st.error(f"BASE_DIR: {BASE_DIR}")
     st.stop()
 except Exception as e:
     st.error(f"UNKNOWN ERROR DURING IMPORT: {e}")
@@ -69,56 +76,69 @@ st.markdown("""
 st.title("📊 Quant Analytics Dashboard")
 
 # ----------------------------------------------------
-# PROCESS MANAGEMENT (SINGLETON)
+# INGESTION THREAD MANAGEMENT (CLOUD-COMPATIBLE)
 # ----------------------------------------------------
-# We use a primitive marker file to track if the ingestion process is running
-# because Streamlit session state is per-browser-tab, but the backend process is global.
-# because Streamlit session state is per-browser-tab, but the backend process is global.
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PID_FILE = os.path.join(BASE_DIR, "ingest.pid")
+# Initialize session state for thread management
+if 'ingestion_thread' not in st.session_state:
+    st.session_state.ingestion_thread = None
+if 'ingestion_active' not in st.session_state:
+    st.session_state.ingestion_active = False
 
-def is_process_running():
-    if os.path.exists(PID_FILE):
-        return True
-    return False
+def is_ingestion_running():
+    """Check if ingestion thread is active"""
+    return st.session_state.ingestion_active
 
-def start_process():
-    if is_process_running():
+def start_ingestion():
+    """Start ingestion in a background thread"""
+    if st.session_state.ingestion_active:
+        logger.info("Ingestion already running")
         return
     
-    # Start the ingestion script as a separate process
-    # We use sys.executable to ensure we use the same python interpreter (venv)
-    kwargs = {}
-    # Windows-specific flags removed to ensure compatibility with cloud/headless environments
-    # and to prevent new window popups that block mobile/web usage.
-    if sys.platform == "win32":
-        # We purposely do NOT use CREATE_NEW_CONSOLE to keep it hidden/embedded
-        pass
+    try:
+        # Import here to avoid circular imports
+        from ingest_service import start_ingestion_service, stop_event
+        
+        # Clear stop event
+        stop_event.clear()
+        
+        # Create and start thread
+        thread = threading.Thread(
+            target=start_ingestion_service,
+            daemon=True,  # Thread will die when main program exits
+            name="IngestionThread"
+        )
+        thread.start()
+        
+        # Store in session state
+        st.session_state.ingestion_thread = thread
+        st.session_state.ingestion_active = True
+        
+        logger.info("Ingestion thread started successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to start ingestion thread: {e}")
+        st.error(f"Failed to start ingestion: {e}")
+
+def stop_ingestion():
+    """Stop the ingestion thread gracefully"""
+    if not st.session_state.ingestion_active:
+        logger.info("Ingestion not running")
+        return
     
     try:
-        proc = subprocess.Popen(
-            [sys.executable, os.path.join(BASE_DIR, "ingest_service.py")],
-            cwd=BASE_DIR,
-            **kwargs
-        )
+        from ingest_service import stop_event
         
-        with open(PID_FILE, "w") as f:
-            f.write(str(proc.pid))
+        # Signal thread to stop
+        stop_event.set()
+        
+        # Update state immediately (thread will finish on its own)
+        st.session_state.ingestion_active = False
+        
+        logger.info("Ingestion stop signal sent")
+        
     except Exception as e:
-        st.error(f"Failed to start background process: {e}")
-
-def stop_process():
-    if os.path.exists(PID_FILE):
-        try:
-            with open(PID_FILE, "r") as f:
-                pid = int(f.read())
-            # Kill process by PID
-            os.kill(pid, 9) # SIGKILL
-        except:
-            pass
-        finally:
-            if os.path.exists(PID_FILE):
-                os.remove(PID_FILE)
+        logger.error(f"Error stopping ingestion: {e}")
+        st.error(f"Error stopping ingestion: {e}")
 
 # ----------------------------------------------------
 # TUTORIAL (BUILT-IN, EVALUATOR LOVED)
@@ -171,13 +191,12 @@ selected_tz_label = st.sidebar.selectbox("Timezone Display", list(tz_options.key
 selected_tz = tz_options[selected_tz_label]
 
 if st.sidebar.button("▶ Start Live Feed"):
-    start_process()
+    start_ingestion()
     st.sidebar.success("Backend Ingestion Service Started")
-    time.sleep(1)
     st.rerun()
 
 if st.sidebar.button("⏹ Stop Live Feed"):
-    stop_process()
+    stop_ingestion()
     st.sidebar.warning("Backend Ingestion Service Stopped")
     st.rerun()
 
@@ -190,7 +209,7 @@ refresh_rate = st.sidebar.slider("Interval (seconds)", 1, 30, 3, disabled=not en
 # Sidebar - Connection Status
 st.sidebar.markdown("### 📡 Connection Status")
 
-if is_process_running():
+if is_ingestion_running():
     st.sidebar.success("🟢 Connected to Binance")
 else:
     st.sidebar.error("🔴 Disconnected")
@@ -223,7 +242,7 @@ df = load_ticks()
 if df.empty:
     st.warning("Waiting for live data... (Start the feed from the sidebar)")
     # Auto-refresh to check for new data if feed is running
-    if is_process_running():
+    if is_ingestion_running():
         time.sleep(2)
         st.rerun()
     st.stop()
@@ -600,6 +619,6 @@ st.download_button(
 # AUTO-REFRESH LOGIC (USER CONTROLLED)
 # ----------------------------------------------------
 # Only refresh if the user explicitly enables it to assume control over "flickering"
-if enable_refresh and is_process_running():
+if enable_refresh and is_ingestion_running():
     time.sleep(refresh_rate)
     st.rerun()

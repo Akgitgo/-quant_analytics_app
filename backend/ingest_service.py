@@ -3,6 +3,7 @@ from storage import insert_tick
 import logging
 import time
 import pandas as pd
+import threading
 
 # Configure logging
 from datetime import datetime
@@ -16,10 +17,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global stop event for graceful shutdown
+stop_event = threading.Event()
+
 def start_ingestion_service():
     """
     Dedicated ingestion service using REST POLLING.
     This is 100% stable and avoids 'Read loop has been closed' WebSocket errors.
+    Now supports graceful shutdown via stop_event.
     """
     symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
     client = Client()
@@ -31,10 +36,13 @@ def start_ingestion_service():
     logging.info("i Polling interval: 2.0s to respect Rate Limits.")
 
     try:
-        while True:
+        while not stop_event.is_set():  # Check for stop signal
             start_time = time.time()
             
             for s in symbols:
+                if stop_event.is_set():  # Check again in inner loop for faster response
+                    break
+                    
                 try:
                     # Fetch recent trades (snapshot)
                     trades = client.get_recent_trades(symbol=s, limit=10)
@@ -61,12 +69,17 @@ def start_ingestion_service():
             
             # Smart Sleep: Ensure we wait at least 2 seconds *after* the work is done
             # to strictly adhere to rate limits.
+            # Use wait() instead of sleep() to allow interruption
             elapsed = time.time() - start_time
             sleep_time = max(0.0, 2.0 - elapsed)
-            time.sleep(sleep_time)
+            if stop_event.wait(timeout=sleep_time):  # Returns True if event is set
+                break
                 
     except KeyboardInterrupt:
         logging.info("Stopping Ingestion Service...")
+    finally:
+        logging.info("Ingestion Service Stopped")
 
 if __name__ == "__main__":
     start_ingestion_service()
+
