@@ -35,10 +35,155 @@ Fully interactive Plotly visualizations
 
 Data export for raw ticks and processed analytics
 
-Architecture Overview
-The application follows a clean, modular logical architecture, even though it runs as a single local app:
+## Architecture Diagram
 
-Binance Futures WebSocket -> Tick Ingestion Layer -> In-Memory Storage (Pandas) -> Sampling & Analytics Engine -> Streamlit Interactive Dashboard -> Alerts & Data Export
+The following diagram illustrates the complete system architecture from data ingestion to user interface:
+
+![System Architecture](architecture_diagram.png)
+
+*Figure: End-to-end data flow from Binance WebSocket through processing layers to the Streamlit frontend*
+
+### High-Level Component Flow
+```
+Data Sources → Ingestion → Storage → Sampling → Analytics → UI/Alerts → User
+```
+
+### Component Descriptions
+
+#### 1. **Data Sources Layer**
+- **Binance Futures WebSocket:** Primary real-time tick data feed
+- **HTML WebSocket Tool:** Reference implementation supporting NDJSON format
+- **CSV Upload:** Historical OHLC data for backtesting and offline analysis
+
+#### 2. **Ingestion Layer**
+- WebSocket client library handles live connections
+- Tick parser validates schema: `{timestamp, symbol, price, qty}`
+- Data cleaning removes outliers and validates price ranges
+- Error handling with try-catch blocks
+- Reconnection logic with exponential backoff (max 5 retries)
+
+#### 3. **Storage Layer**
+Two-tier storage strategy:
+- **SQLite Database (`market_data.db`):**
+  - Persistent storage for all ticks
+  - Indexed by `(symbol, timestamp)` for fast queries
+  - Table schema: `ticks (timestamp, symbol, price, qty)`
+- **In-Memory Buffer (Pandas DataFrame):**
+  - Holds last 10,000 ticks per symbol
+  - Used for real-time analytics computation
+  - Fast access, no disk I/O overhead
+
+#### 4. **Sampling Engine**
+- Time-based resampling: converts tick data to OHLCV bars
+- Supported intervals: **1 second, 1 minute, 5 minutes**
+- Aggregation rules:
+  - **Open:** First trade price in interval
+  - **High:** Maximum trade price
+  - **Low:** Minimum trade price
+  - **Close:** Last trade price
+  - **Volume:** Sum of all quantities
+- Proper handling of interval boundaries using pandas `resample()`
+
+#### 5. **Analytics Engine**
+Six core analytical modules:
+
+**a) Regression Module**
+- OLS (Ordinary Least Squares) hedge ratio: β = cov(X,Y) / var(X)
+- Uses `statsmodels` library for robust estimation
+- Provides coefficient, R², and standard error
+
+**b) Spread Analysis**
+- Computes spread: `Spread = Y - β·X`
+- Forms basis for mean-reversion signals
+- Tracked over rolling windows
+
+**c) Z-Score Module**
+- Normalizes spread: `Z = (Spread - μ) / σ`
+- Rolling mean (μ) and std (σ) over user-defined window
+- Real-time signal generation
+
+**d) Stationarity Test**
+- Augmented Dickey-Fuller (ADF) test
+- Tests null hypothesis: spread has unit root (non-stationary)
+- p-value < 0.05 suggests mean-reverting behavior
+
+**e) Correlation Module**
+- Rolling Pearson correlation between asset pairs
+- Window-based computation
+- Tracks relationship stability over time
+
+**f) Logging & Monitoring**
+- Python `logging` module for all operations
+- File output: `analytics_YYYYMMDD.log`
+- Console output for real-time debugging
+
+#### 6. **Alert System**
+- Rule-based engine: triggers when `|z-score| > threshold`
+- Alert types:
+  - **Visual:** Prominent UI notification (red banner)
+  - **Console:** Logged with timestamp
+- Configurable thresholds via UI slider
+- Extensible for additional custom rules (e.g., correlation drops, volume spikes)
+
+#### 7. **Streamlit Frontend**
+Interactive dashboard with:
+- **Control Panel (Sidebar):**
+  - Symbol X/Y selection
+  - Timeframe picker (1s/1m/5m)
+  - Rolling window size
+  - Z-score alert threshold
+  - Connection status indicator
+- **Main Panel:**
+  - Database content viewer (table)
+  - Price comparison chart (Plotly line chart)
+  - Spread & Z-Score chart (dual-axis)
+  - Rolling correlation plot
+  - Summary statistics (metrics)
+- **Data Export:**
+  - Download OHLCV data as CSV
+  - Export processed analytics
+- **Real-time Updates:**
+  - Charts refresh automatically using `st.rerun()`
+  - Metrics update on new data availability
+
+#### 8. **Supporting Services** (Right Side Panel)
+- **Logging:** File + console output for debugging
+- **Error Handling:** Graceful degradation on failures
+- **Configuration:** UI-based controls (extensible to config files)
+- **Session State:** Maintains WebSocket status, user preferences
+- **Caching:** `@st.cache_data` for heavy computations
+
+### Data Flow Example
+
+Here's how a single trade flows through the system:
+```
+1. Binance sends: {"symbol": "BTCUSDT", "price": 86313.42, "qty": 0.0008, "timestamp": "2025-12-16T08:54:37Z"}
+   ↓
+2. Ingestion Layer validates and parses
+   ↓
+3. SQLite stores tick + In-memory buffer updates
+   ↓
+4. Sampling Engine (if interval boundary): creates OHLCV bar
+   ↓
+5. Analytics Engine computes:
+   - Updates hedge ratio (β)
+   - Recalculates spread = Y - β·X
+   - Computes new z-score = (spread - μ) / σ
+   ↓
+6. IF |z-score| > threshold → Alert System triggers
+   ↓
+7. Frontend displays updated chart + metrics
+   ↓
+8. User sees real-time update in browser
+```
+
+### Diagram Files
+
+- **Source:** `architecture.drawio` (editable in draw.io)
+- **PNG:** `architecture_diagram.png` (for documentation)
+- **SVG:** `architecture_diagram.svg` (scalable vector format)
+
+---
 
 ## Design Decisions & Trade-offs
 
